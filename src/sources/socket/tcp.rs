@@ -180,6 +180,10 @@ impl TcpSource for RawTcpSource {
                     log.insert("certificate_metadata", certificate_metadata.to_string());
                 }
 
+                if let Some(certificate_metadata) = certificate_metadata {
+                    log.insert("certificate_metadata", certificate_metadata.to_string());
+                }
+
                 log.try_insert(host_key, host.clone());
             }
         }
