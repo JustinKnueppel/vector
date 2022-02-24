@@ -32,7 +32,7 @@ use crate::{
     },
     shutdown::ShutdownSignal,
     tcp::TcpKeepaliveConfig,
-    tls::{MaybeTlsIncomingStream, MaybeTlsListener, MaybeTlsSettings},
+    tls::{MaybeTlsIncomingStream, MaybeTlsListener, MaybeTlsSettings, CertificateMetadata},
     SourceSender,
 };
 
@@ -110,7 +110,7 @@ where
 
     fn decoder(&self) -> Self::Decoder;
 
-    fn handle_events(&self, _events: &mut [Event], _host: Bytes) {}
+    fn handle_events(&self, _events: &mut [Event], _host: Bytes, _certificate_metadata: &Option<CertificateMetadata>) {}
 
     fn build_acker(&self, item: &[Self::Item]) -> Self::Acker;
 
@@ -270,6 +270,17 @@ async fn handle_stream<T>(
             peer_addr
         });
     });
+
+    let cert = match socket.get_ref().ssl_stream() {
+        Some(stream) => {
+            match stream.ssl().peer_certificate() {
+                Some(cert) => Some(CertificateMetadata::from_x509(cert.to_owned())),
+                None => None
+            }
+        },
+        None => None
+    };
+
     let reader = FramedRead::new(socket, source.decoder());
     let mut reader = ReadyFrames::new(reader);
     let host = Bytes::from(peer_addr.to_string());
@@ -334,7 +345,7 @@ async fn handle_stream<T>(
                             }
                         }
 
-                        source.handle_events(&mut events, host.clone());
+                        source.handle_events(&mut events, host.clone(), &cert);
                         match out.send_batch(events).await {
                             Ok(_) => {
                                 let ack = match receiver {

@@ -13,7 +13,7 @@ use crate::{
     serde::default_decoding,
     sources::util::{SocketListenAddr, TcpNullAcker, TcpSource},
     tcp::TcpKeepaliveConfig,
-    tls::TlsConfig,
+    tls::{TlsConfig, CertificateMetadata},
 };
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -162,7 +162,7 @@ impl TcpSource for RawTcpSource {
         self.decoder.clone()
     }
 
-    fn handle_events(&self, events: &mut [Event], host: Bytes) {
+    fn handle_events(&self, events: &mut [Event], host: Bytes, certificate_metadata: &Option<CertificateMetadata>) {
         let now = Utc::now();
 
         for event in events {
@@ -175,6 +175,10 @@ impl TcpSource for RawTcpSource {
                     .host_key
                     .as_deref()
                     .unwrap_or_else(|| log_schema().host_key());
+
+                if let Some(certificate_metadata) = certificate_metadata {
+                    log.insert("certificate_metadata", certificate_metadata.to_string());
+                }
 
                 log.try_insert(host_key, host.clone());
             }

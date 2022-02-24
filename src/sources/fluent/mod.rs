@@ -17,7 +17,7 @@ use crate::{
     internal_events::{FluentMessageDecodeError, FluentMessageReceived},
     serde::bool_or_struct,
     tcp::TcpKeepaliveConfig,
-    tls::{MaybeTlsSettings, TlsConfig},
+    tls::{MaybeTlsSettings, TlsConfig, CertificateMetadata},
 };
 
 mod message;
@@ -101,12 +101,16 @@ impl TcpSource for FluentSource {
         FluentDecoder::new()
     }
 
-    fn handle_events(&self, events: &mut [Event], host: Bytes) {
+    fn handle_events(&self, events: &mut [Event], host: Bytes, certificate_metadata: &Option<CertificateMetadata>) {
         for event in events {
             let log = event.as_mut_log();
 
             if !log.contains(log_schema().host_key()) {
                 log.insert(log_schema().host_key(), host.clone());
+            }
+
+            if let Some(certificate_metadata) = certificate_metadata {
+                log.insert("certificate_metadata", certificate_metadata.to_string());
             }
         }
     }

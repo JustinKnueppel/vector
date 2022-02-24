@@ -20,7 +20,7 @@ use crate::{
     event::{Event, Value},
     serde::bool_or_struct,
     tcp::TcpKeepaliveConfig,
-    tls::{MaybeTlsSettings, TlsConfig},
+    tls::{MaybeTlsSettings, TlsConfig, CertificateMetadata},
     types,
 };
 
@@ -106,7 +106,7 @@ impl TcpSource for LogstashSource {
         LogstashDecoder::new()
     }
 
-    fn handle_events(&self, events: &mut [Event], host: Bytes) {
+    fn handle_events(&self, events: &mut [Event], host: Bytes, certificate_metadata: &Option<CertificateMetadata>) {
         let now = Value::from(chrono::Utc::now());
         for event in events {
             let log = event.as_mut_log();
@@ -122,6 +122,9 @@ impl TcpSource for LogstashSource {
                     })
                     .unwrap_or_else(|| now.clone());
                 log.insert(log_schema().timestamp_key(), timestamp);
+            }
+            if let Some(certificate_metadata) = certificate_metadata {
+                log.insert("certificate_metadata", certificate_metadata.to_string());
             }
             log.try_insert(log_schema().host_key(), host.clone());
         }

@@ -29,7 +29,7 @@ use crate::{
     shutdown::ShutdownSignal,
     sources::util::{SocketListenAddr, TcpNullAcker, TcpSource},
     tcp::TcpKeepaliveConfig,
-    tls::{MaybeTlsSettings, TlsConfig},
+    tls::{MaybeTlsSettings, TlsConfig, CertificateMetadata},
     udp, SourceSender,
 };
 
@@ -151,7 +151,7 @@ impl SourceConfig for SyslogConfig {
                 Ok(build_unix_stream_source(
                     path,
                     decoder,
-                    move |events, host| handle_events(events, &host_key, host),
+                    move |events, host| handle_events(events, &host_key, host, &None),
                     cx.shutdown,
                     cx.out,
                 ))
@@ -200,8 +200,8 @@ impl TcpSource for SyslogTcpSource {
         )
     }
 
-    fn handle_events(&self, events: &mut [Event], host: Bytes) {
-        handle_events(events, &self.host_key, Some(host));
+    fn handle_events(&self, events: &mut [Event], host: Bytes, certificate_metadata: &Option<CertificateMetadata>) {
+        handle_events(events, &self.host_key, Some(host), certificate_metadata);
     }
 
     fn build_acker(&self, _: &[Self::Item]) -> Self::Acker {
@@ -248,7 +248,7 @@ pub fn udp(
                 match frame {
                     Ok(((mut events, _byte_size), received_from)) => {
                         let received_from = received_from.ip().to_string().into();
-                        handle_events(&mut events, &host_key, Some(received_from));
+                        handle_events(&mut events, &host_key, Some(received_from), &None);
                         Some(events.remove(0))
                     }
                     Err(error) => {
@@ -273,13 +273,23 @@ pub fn udp(
     })
 }
 
-fn handle_events(events: &mut [Event], host_key: &str, default_host: Option<Bytes>) {
+fn handle_events(
+    events: &mut [Event],
+    host_key: &str,
+    default_host: Option<Bytes>,
+    certificate_metadata: &Option<CertificateMetadata>
+) {
     for event in events {
-        enrich_syslog_event(event, host_key, default_host.clone());
+        enrich_syslog_event(event, host_key, default_host.clone(), certificate_metadata);
     }
 }
 
-fn enrich_syslog_event(event: &mut Event, host_key: &str, default_host: Option<Bytes>) {
+fn enrich_syslog_event(
+    event: &mut Event,
+    host_key: &str,
+    default_host: Option<Bytes>,
+    certificate_metadata: &Option<CertificateMetadata>
+) {
     let log = event.as_mut_log();
 
     log.insert(log_schema().source_type_key(), Bytes::from("syslog"));
@@ -293,6 +303,10 @@ fn enrich_syslog_event(event: &mut Event, host_key: &str, default_host: Option<B
         .map(|hostname| hostname.coerce_to_bytes());
     if let Some(parsed_host) = parsed_hostname.or(default_host) {
         log.insert(host_key, parsed_host);
+    }
+
+    if let Some(certificate_metadata) = certificate_metadata {
+        log.insert("certificate_metadata", certificate_metadata.to_string());
     }
 
     let timestamp = log
