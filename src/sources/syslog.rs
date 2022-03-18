@@ -324,10 +324,11 @@ fn enrich_syslog_event(
 #[cfg(test)]
 mod test {
     use chrono::prelude::*;
-    use vector_common::assert_event_data_eq;
+    use vector_common::{assert_event_data_eq, btreemap};
 
     use super::*;
     use crate::{codecs::decoding::format::Deserializer, config::log_schema, event::Event};
+    use vector_core::event::Value;
 
     fn event_from_bytes(
         host_key: &str,
@@ -336,7 +337,7 @@ mod test {
     ) -> Option<Event> {
         let parser = SyslogDeserializer;
         let mut events = parser.parse(bytes).ok()?;
-        handle_events(&mut events, host_key, default_host);
+        handle_events(&mut events, host_key, default_host, &None);
         Some(events.remove(0))
     }
 
@@ -696,5 +697,63 @@ mod test {
             event_from_bytes("host", None, raw.into()).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn handle_event_with_tls() {
+        let mut event = Event::from(btreemap! {
+            "message" => "foo",
+            "hostname" => "vector.dev",
+            "tag" => "tag.name",
+            "timestamp" => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into())
+        });
+
+        let peer_cert = CertificateMetadata {
+            common_name: Some("Common name".to_owned()),
+            country_name: Some("United States".to_owned()),
+            organization_name: Some("Vector".to_owned()),
+            locality_name: None,
+            organizational_unit_name: None,
+            state_or_province_name: None
+        };
+
+        let expected = Event::from(btreemap! {
+            log_schema().source_type_key() => "syslog",
+            "message" => "foo",
+            "hostname" => "vector.dev",
+            "tag" => "tag.name",
+            "timestamp" => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into()),
+            "host" => "vector.dev",
+            "source_ip" => "1.1.1.1",
+            "certificate_metadata" => &peer_cert.to_string()[..],
+        });
+
+        enrich_syslog_event(&mut event, "host", Some(Bytes::from("1.1.1.1")), &Some(peer_cert));
+
+        assert_event_data_eq!(event, expected);
+    }
+
+    #[test]
+    fn handle_event_without_tls() {
+        let mut event = Event::from(btreemap! {
+            "message" => "foo",
+            "hostname" => "vector.dev",
+            "tag" => "tag.name",
+            "timestamp" => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into())
+        });
+
+        let expected = Event::from(btreemap! {
+            log_schema().source_type_key() => "syslog",
+            "message" => "foo",
+            "hostname" => "vector.dev",
+            "tag" => "tag.name",
+            "timestamp" => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into()),
+            "host" => "vector.dev",
+            "source_ip" => "1.1.1.1",
+        });
+
+        enrich_syslog_event(&mut event, "host", Some(Bytes::from("1.1.1.1")), &None);
+
+        assert_event_data_eq!(event, expected);
     }
 }

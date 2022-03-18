@@ -391,7 +391,7 @@ mod test {
         let lines = vec!["one line".to_owned(), "another line".to_owned()];
 
         wait_for_tcp(addr).await;
-        send_lines_tls(addr, "localhost".into(), lines.into_iter(), None)
+        send_lines_tls(addr, "localhost".into(), lines.into_iter(), None, None, None)
             .await
             .unwrap();
 
@@ -440,6 +440,8 @@ mod test {
             "localhost".into(),
             lines.into_iter(),
             std::path::Path::new(tls::TEST_PEM_CA_PATH),
+            None,
+            None
         )
         .await
         .unwrap();
@@ -457,6 +459,51 @@ mod test {
         );
 
         SOURCE_TESTS.assert(&TCP_SOURCE_TAGS);
+    }
+
+    #[tokio::test]
+    async fn tcp_capturing_tls_peer() {
+        components::init_test();
+        let (tx, mut rx) = SourceSender::new_test();
+        let addr = next_addr();
+
+        let mut config = TcpConfig::from_address(addr.into());
+        config.set_tls(Some(TlsConfig {
+            enabled: Some(true),
+            options: TlsOptions {
+                verify_certificate: Some(true),
+                crt_file: Some(tls::TEST_PEM_CRT_PATH.into()),
+                key_file: Some(tls::TEST_PEM_KEY_PATH.into()),
+                ..Default::default()
+            },
+        }));
+
+        let server = SocketConfig::from(config)
+            .build(SourceContext::new_test(tx, None))
+            .await
+            .unwrap();
+        tokio::spawn(server);
+
+        let lines = vec!["one line".to_owned(), "another line".to_owned()];
+
+        wait_for_tcp(addr).await;
+        send_lines_tls(
+            addr,
+            "localhost".into(),
+            lines.into_iter(),
+            std::path::Path::new(tls::TEST_PEM_CA_PATH),
+            std::path::Path::new("tests/data/Crt_from_intermediate.crt"),
+            std::path::Path::new("tests/data/Crt_from_intermediate.key"),
+        )
+        .await
+        .unwrap();
+
+        let event = rx.next().await.unwrap();
+        //TODO: Failing with key error on `certificate_metadata`
+        assert_eq!(
+            event.as_log()["certificate_metadata"],
+            value::Value::Bytes(bytes::Bytes::from(format!("CN={},O={},L={},ST={},C={}", "localhost", "Timber.io", "Brooklyn", "New York", "US")))
+        );
     }
 
     #[tokio::test]

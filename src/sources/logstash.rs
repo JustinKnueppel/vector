@@ -107,34 +107,39 @@ impl TcpSource for LogstashSource {
     }
 
     fn handle_events(&self, events: &mut [Event], host: Bytes, certificate_metadata: &Option<CertificateMetadata>) {
-        let now = Value::from(chrono::Utc::now());
-        for event in events {
-            let log = event.as_mut_log();
-            log.try_insert(log_schema().source_type_key(), "logstash");
-            if log.get(log_schema().timestamp_key()).is_none() {
-                // Attempt to parse @timestamp if it exists; otherwise set to receipt time.
-                let timestamp = log
-                    .get_flat("@timestamp")
-                    .and_then(|timestamp| {
-                        self.timestamp_converter
-                            .convert::<Value>(timestamp.coerce_to_bytes())
-                            .ok()
-                    })
-                    .unwrap_or_else(|| now.clone());
-                log.insert(log_schema().timestamp_key(), timestamp);
-            }
-            if let Some(certificate_metadata) = certificate_metadata {
-                log.insert("certificate_metadata", certificate_metadata.to_string());
-            }
-            log.try_insert(log_schema().host_key(), host.clone());
-        }
+        handle_events(events, host, certificate_metadata, &self.timestamp_converter);
     }
+
+    
 
     fn build_acker(&self, frames: &[Self::Item]) -> Self::Acker {
         LogstashAcker::new(frames)
     }
 }
 
+fn handle_events(events: &mut [Event], host: Bytes, certificate_metadata: &Option<CertificateMetadata>, timestamp_converter: &crate::types::Conversion) {
+    let now = Value::from(chrono::Utc::now());
+    for event in events {
+        let log = event.as_mut_log();
+        log.try_insert(log_schema().source_type_key(), "logstash");
+        if log.get(log_schema().timestamp_key()).is_none() {
+            // Attempt to parse @timestamp if it exists; otherwise set to receipt time.
+            let timestamp = log
+                .get_flat("@timestamp")
+                .and_then(|timestamp| {
+                    timestamp_converter
+                        .convert::<Value>(timestamp.coerce_to_bytes())
+                        .ok()
+                })
+                .unwrap_or_else(|| now.clone());
+            log.insert(log_schema().timestamp_key(), timestamp);
+        }
+        if let Some(certificate_metadata) = certificate_metadata {
+            log.insert("certificate_metadata", certificate_metadata.to_string());
+        }
+        log.try_insert(log_schema().host_key(), host.clone());
+    }
+}
 struct LogstashAcker {
     sequence_number: u32,
     protocol_version: Option<LogstashProtocolVersion>,
@@ -567,8 +572,11 @@ impl From<LogstashEventFrame> for SmallVec<[Event; 1]> {
 #[cfg(test)]
 mod test {
     use bytes::BufMut;
+    use chrono::DateTime;
     use rand::{thread_rng, Rng};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use vector_common::{btreemap, assert_event_data_eq, TimeZone};
+
 
     use super::*;
     use crate::{
@@ -580,6 +588,54 @@ mod test {
     #[test]
     fn generate_config() {
         crate::test_util::test_generate_config::<LogstashConfig>();
+    }
+
+    #[test]
+    fn test_handle_with_tls() {
+        let mut events = vec!(Event::from(btreemap!(
+            log_schema().timestamp_key() => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into()),
+            log_schema().source_type_key() => "logstash",
+        )));
+
+        let peer_cert = CertificateMetadata {
+            common_name: Some("Test Common".to_owned()),
+            locality_name: Some("Test locality".to_owned()),
+            country_name: Some("United States".to_owned()),
+            organization_name: None,
+            organizational_unit_name: None,
+            state_or_province_name: None
+        };
+
+        let expected = Event::from(btreemap!(
+            log_schema().timestamp_key() => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into()),
+            log_schema().source_type_key() => "logstash",
+            log_schema().host_key() => "host",
+            "certificate_metadata" => &peer_cert.to_string()[..],
+        ));
+
+
+        handle_events(&mut events, Bytes::from("host"), &Some(peer_cert), &types::Conversion::Timestamp(TimeZone::Local));
+
+        assert_event_data_eq!(expected, events[0]);
+    }
+
+    #[test]
+    fn test_handle_without_tls() {
+        let mut events = vec!(Event::from(btreemap!(
+            log_schema().timestamp_key() => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into()),
+            log_schema().source_type_key() => "logstash",
+        )));
+
+        let expected = Event::from(btreemap!(
+            log_schema().timestamp_key() => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into()),
+            log_schema().source_type_key() => "logstash",
+            log_schema().host_key() => "host",
+        ));
+
+
+        handle_events(&mut events, Bytes::from("host"), &None, &types::Conversion::Timestamp(TimeZone::Local));
+
+        assert_event_data_eq!(expected, events[0]);
     }
 
     #[tokio::test]

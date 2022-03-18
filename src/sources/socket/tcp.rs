@@ -163,33 +163,87 @@ impl TcpSource for RawTcpSource {
     }
 
     fn handle_events(&self, events: &mut [Event], host: Bytes, certificate_metadata: &Option<CertificateMetadata>) {
-        let now = Utc::now();
-
-        for event in events {
-            if let Event::Log(ref mut log) = event {
-                log.try_insert(log_schema().source_type_key(), Bytes::from("socket"));
-                log.try_insert(log_schema().timestamp_key(), now);
-
-                let host_key = self
-                    .config
-                    .host_key
-                    .as_deref()
-                    .unwrap_or_else(|| log_schema().host_key());
-
-                if let Some(certificate_metadata) = certificate_metadata {
-                    log.insert("certificate_metadata", certificate_metadata.to_string());
-                }
-
-                if let Some(certificate_metadata) = certificate_metadata {
-                    log.insert("certificate_metadata", certificate_metadata.to_string());
-                }
-
-                log.try_insert(host_key, host.clone());
-            }
-        }
+        handle_events(events, host, certificate_metadata, self.config.host_key.as_deref());
     }
 
     fn build_acker(&self, _: &[Self::Item]) -> Self::Acker {
         TcpNullAcker
+    }
+}
+
+fn handle_events(events: &mut [Event], host: Bytes, certificate_metadata: &Option<CertificateMetadata>, self_host_key: Option<&str>) {
+    let now = Utc::now();
+    let host_key = self_host_key
+        .unwrap_or_else(|| log_schema().host_key());
+
+    for event in events {
+        let log = event.as_mut_log();
+
+        log.try_insert(log_schema().source_type_key(), Bytes::from("socket"));
+        log.try_insert(log_schema().timestamp_key(), now);
+
+        if let Some(certificate_metadata) = certificate_metadata {
+            log.insert("certificate_metadata", certificate_metadata.to_string());
+        }
+
+        log.try_insert(host_key, host.clone());
+    }
+}
+
+mod test {
+    use chrono::DateTime;
+    use bytes::Bytes;
+
+    use crate::{
+        config::log_schema,
+        event::{Event, Value},
+    };
+
+    use vector_common::{btreemap, assert_event_data_eq};
+    use super::*;
+
+    
+    #[test]
+    fn handle_events_no_tls() {
+        let mut events = vec!(Event::from(btreemap!(
+            log_schema().timestamp_key() => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into()),
+        )));
+
+        let expected = Event::from(btreemap!(
+            log_schema().timestamp_key() => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into()),
+            "host" => "host",
+            log_schema().source_type_key() => "socket"
+        ));
+
+        handle_events(&mut events, Bytes::from("host"), &None, Some("host"));
+
+        assert_event_data_eq!(expected, events[0])
+    }
+    
+    #[test]
+    fn handle_events_with_tls() {
+        let mut events = vec!(Event::from(btreemap!(
+            log_schema().timestamp_key() => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into()),
+        )));
+
+        let peer_cert = CertificateMetadata {
+            country_name: Some("USA".to_owned()),
+            state_or_province_name: Some("California".to_owned()),
+            locality_name: None,
+            organization_name: Some("Vector".to_owned()),
+            organizational_unit_name: None,
+            common_name: Some("Common name".to_owned()),
+        };
+
+        let expected = Event::from(btreemap!(
+            log_schema().timestamp_key() => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into()),
+            "host" => "host",
+            log_schema().source_type_key() => "socket",
+            "certificate_metadata" => &peer_cert.to_string()[..],
+        ));
+
+        handle_events(&mut events, Bytes::from("host"), &Some(peer_cert), Some("host"));
+
+        assert_event_data_eq!(expected, events[0])
     }
 }

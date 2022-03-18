@@ -103,20 +103,24 @@ impl TcpSource for FluentSource {
 
     fn handle_events(&self, events: &mut [Event], host: Bytes, certificate_metadata: &Option<CertificateMetadata>) {
         for event in events {
-            let log = event.as_mut_log();
-
-            if !log.contains(log_schema().host_key()) {
-                log.insert(log_schema().host_key(), host.clone());
-            }
-
-            if let Some(certificate_metadata) = certificate_metadata {
-                log.insert("certificate_metadata", certificate_metadata.to_string());
-            }
+            handle_event(event, &host, certificate_metadata);
         }
     }
 
     fn build_acker(&self, frame: &[Self::Item]) -> Self::Acker {
         FluentAcker::new(frame)
+    }
+}
+
+fn handle_event(event: &mut Event, host: &Bytes, certificate_metadata: &Option<CertificateMetadata>) {
+    let log = event.as_mut_log();
+
+    if !log.contains(log_schema().host_key()) {
+        log.insert(log_schema().host_key(), host.clone());
+    }
+
+    if let Some(certificate_metadata) = certificate_metadata {
+        log.insert("certificate_metadata", certificate_metadata.to_string());
     }
 }
 
@@ -705,6 +709,56 @@ mod tests {
         assert_event_data_eq!(got.0[0], expected[0]);
         assert_event_data_eq!(got.0[1], expected[1]);
         assert_event_data_eq!(got.0[2], expected[2]);
+    }
+
+    #[test]
+    fn handle_event_without_tls() {
+        let mut event = Event::from(btreemap! {
+            "message" => "foo",
+            "tag" => "tag.name",
+            "timestamp" => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into())
+        });
+
+        let expected = Event::from(btreemap! {
+            "message" => "foo",
+            "tag" => "tag.name",
+            "timestamp" => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into()),
+            "host" => "test.host"
+        });
+
+        handle_event(&mut event, &Bytes::from("test.host"), &None);
+
+        assert_event_data_eq!(event, expected);
+    }
+
+    #[test]
+    fn handle_event_with_tls() {
+        let mut event = Event::from(btreemap! {
+            "message" => "foo",
+            "tag" => "tag.name",
+            "timestamp" => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into())
+        });
+
+        let peer_cert = CertificateMetadata {
+            common_name: Some("Common name".to_owned()),
+            country_name: Some("United States".to_owned()),
+            organization_name: Some("Vector".to_owned()),
+            locality_name: None,
+            organizational_unit_name: None,
+            state_or_province_name: None
+        };
+
+        let expected = Event::from(btreemap! {
+            "message" => "foo",
+            "tag" => "tag.name",
+            "timestamp" => Value::Timestamp(DateTime::parse_from_rfc3339("2015-09-07T01:23:04Z").unwrap().into()),
+            "host" => "test.host",
+            "certificate_metadata" => &peer_cert.to_string()[..],
+        });
+
+        handle_event(&mut event, &Bytes::from("test.host"), &Some(peer_cert));
+
+        assert_event_data_eq!(event, expected);
     }
 
     fn decode_all(message: Vec<u8>) -> Result<(SmallVec<[Event; 1]>, usize), DecodeError> {
